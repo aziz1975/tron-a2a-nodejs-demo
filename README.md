@@ -22,6 +22,7 @@ flowchart LR
   executor["TRON agent executor\nsrc/a2a/tron-agent.ts"]
   parser["Action parser\ntext parts or data parts"]
   wallet["Wallet helpers\nsrc/tron/wallet.ts"]
+  agentWallet["Agent Wallet signer\n@bankofai/agent-wallet"]
   tx["Transaction helpers\nsrc/tron/transactions.ts"]
   tronweb["TronWeb client\nsrc/tron/client.ts"]
   network["TRON testnet node\nNile/Shasta via TRON_FULL_HOST"]
@@ -36,9 +37,11 @@ flowchart LR
   executor --> parser
   parser -->|"get_tron_balance"| wallet
   parser -->|"prepare, broadcast, verify"| tx
+  wallet --> agentWallet
+  tx --> agentWallet
   wallet --> tronweb
   tx --> tronweb
-  tronweb -->|"balance, build tx, sign, broadcast, lookup"| network
+  tronweb -->|"balance, build tx, broadcast, lookup"| network
   executor -->|"status updates + artifact updates"| sdk
   sdk -->|"Task, status-update, artifact-update"| cli
   cli -->|"prints text + JSON artifact data"| user
@@ -53,9 +56,9 @@ flowchart LR
 5. The parsed action is dispatched to the TRON helper layer:
    - `get_tron_balance` calls `getBalance()` in `src/tron/wallet.ts`.
    - `prepare_trx_transfer` builds an unsigned TRX transfer in `src/tron/transactions.ts`.
-   - `broadcast_trx_transfer` signs and broadcasts the transfer. This requires `TRON_PRIVATE_KEY`.
+   - `broadcast_trx_transfer` signs with `@bankofai/agent-wallet` and broadcasts the transfer.
    - `verify_transaction` looks up the transaction and receipt by transaction id.
-6. The helper layer creates a TronWeb instance from `src/tron/client.ts`, using `TRON_FULL_HOST`, optional `TRON_PRO_API_KEY`, and optional `TRON_PRIVATE_KEY`.
+6. The helper layer creates a TronWeb instance from `src/tron/client.ts`, using `TRON_FULL_HOST` and optional `TRON_PRO_API_KEY`. Wallet address resolution and signing use `@bankofai/agent-wallet`, which can read local Agent Wallet config or env fallback keys.
 7. The executor returns the result as an A2A artifact with both text and JSON data, then publishes a final `completed` status. If an error occurs, it publishes a final `failed` status with the error message.
 
 ## Project Layout
@@ -70,6 +73,7 @@ src/
     agent-card.ts        Agent Card metadata and advertised skills
     tron-agent.ts        A2A executor, parser, task status, and artifacts
   tron/
+    agent-wallet.ts      Agent Wallet address and signer resolution
     amount.ts            TRX/SUN parsing and formatting helpers
     client.ts            TronWeb construction
     transactions.ts      Prepare, broadcast, and verify transaction logic
@@ -85,31 +89,66 @@ The A2A docs at `https://a2a-protocol.org/latest/` describe the latest protocol 
 - Node.js `22` or newer
 - npm
 - TRON testnet access through `TRON_FULL_HOST`
-- A funded TRON testnet private key only when broadcasting transactions
+- A funded Agent Wallet TRON account when preparing wallet-based transfers or broadcasting
 
 ## Setup
+
+Install project dependencies:
 
 ```bash
 npm install
 cp .env.example .env
 ```
 
-The default `.env.example` points at Nile:
+Configure `.env` with server and TRON node settings only. Do not put private keys in `.env`.
 
 ```env
 PORT=4000
 AGENT_BASE_URL=http://localhost:4000
+
 TRON_NETWORK=nile
 TRON_FULL_HOST=https://nile.trongrid.io
 TRON_PRO_API_KEY=
-TRON_PRIVATE_KEY=
 ```
 
-`TRON_PRIVATE_KEY` is required for transfer proposals that use the configured demo wallet and for broadcasts. Balance checks for an explicit address and transaction verification can run without a private key.
+Create an encrypted local Agent Wallet. This stores wallet data under `~/.agent-wallet`, outside this repo:
+
+```bash
+npx agent-wallet start local_secure --wallet-id tron-demo
+```
+
+When prompted:
+
+- choose or import `private_key`
+- paste a funded TRON testnet private key
+- set a strong Agent Wallet master password
+
+Check that the wallet exists and is active:
+
+```bash
+npx agent-wallet list
+```
+
+If needed, set it as the active wallet:
+
+```bash
+npx agent-wallet use tron-demo
+```
+
+Before starting the server, unlock the Agent Wallet for this terminal session:
+
+```bash
+read -s AGENT_WALLET_PASSWORD
+export AGENT_WALLET_PASSWORD
+```
+
+Paste the Agent Wallet master password when prompted. This keeps the password out of `.env` and shell output. The server process reads `AGENT_WALLET_PASSWORD` only from the current shell environment.
+
+Balance checks for an explicit address and transaction verification can run without a configured wallet. Default `balance`, transfer preparation, and broadcasting need a configured Agent Wallet because they use the active wallet address.
 
 ## Run
 
-Start the A2A agent:
+Start the A2A agent from the same terminal where `AGENT_WALLET_PASSWORD` is exported:
 
 ```bash
 npm run server
@@ -136,7 +175,7 @@ npm run client -- "prepare transfer 1 TRX to TXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 npm run client -- "verify <transaction_id>"
 ```
 
-Broadcasting requires `TRON_PRIVATE_KEY` and an explicit broadcast request:
+Broadcasting requires a configured Agent Wallet signer, a funded testnet wallet, and an explicit broadcast request:
 
 ```bash
 npm run client -- "broadcast 1 TRX to TXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
@@ -221,6 +260,14 @@ Run the TypeScript compiler without emitting files:
 npm run build
 ```
 
+## Troubleshooting
+
+- `Password required for local_secure wallets`: export `AGENT_WALLET_PASSWORD` in the same terminal before running `npm run server`.
+- `Wallet not found` or no active wallet: run `npx agent-wallet list`, then `npx agent-wallet use tron-demo`.
+- `Invalid recipient TRON address`: use a valid TRON base58 address that starts with `T`.
+- Broadcast fails with insufficient balance or account errors: fund the Agent Wallet address on the configured testnet and make sure `TRON_NETWORK` matches `TRON_FULL_HOST`.
+- TronGrid rate-limit or API errors: set `TRON_PRO_API_KEY` in `.env`, or use another compatible `TRON_FULL_HOST`.
+
 ## Safety
 
-Use testnet only. Keep `TRON_PRIVATE_KEY` server-side and out of logs, commits, browser clients, and upstream agent messages. The demo never broadcasts unless the incoming request asks for `broadcast_trx_transfer` or the natural-language prompt starts with `broadcast`.
+Use testnet only. Keep Agent Wallet secrets and fallback private keys server-side and out of logs, commits, browser clients, and upstream agent messages. Do not commit `.env` or `~/.agent-wallet`. The demo never broadcasts unless the incoming request asks for `broadcast_trx_transfer` or the natural-language prompt starts with `broadcast`.

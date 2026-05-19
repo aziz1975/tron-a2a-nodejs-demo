@@ -1,5 +1,6 @@
-import { createTronWeb, getConfiguredAddress } from "./client.js";
+import { getAgentWalletAddress } from "./agent-wallet.js";
 import { formatSunToTrx } from "./amount.js";
+import { createTronWeb } from "./client.js";
 
 export type BalanceResult = {
   address: string;
@@ -10,11 +11,7 @@ export type BalanceResult = {
 
 export async function getBalance(address?: string): Promise<BalanceResult> {
   const tronWeb = createTronWeb();
-  const resolvedAddress = address ?? getConfiguredAddress(tronWeb);
-
-  if (!resolvedAddress) {
-    throw new Error("No address provided and TRON_PRIVATE_KEY is not configured.");
-  }
+  const resolvedAddress = address ?? (await getAgentWalletAddress());
 
   if (!tronWeb.isAddress(resolvedAddress)) {
     throw new Error(`Invalid TRON address: ${resolvedAddress}`);

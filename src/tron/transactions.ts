@@ -1,6 +1,7 @@
 import { config } from "../config.js";
+import { getAgentWalletAddress, resolveTronWallet } from "./agent-wallet.js";
 import { assertSafeSunNumber, formatSunToTrx, parseTrxToSun } from "./amount.js";
-import { createTronWeb, getConfiguredAddress } from "./client.js";
+import { createTronWeb } from "./client.js";
 
 export type TransferProposal = {
   type: "trx_transfer_proposal";
@@ -27,12 +28,37 @@ export type TransactionVerification = {
 };
 
 export async function prepareTrxTransfer(to: string, amountTrx: string): Promise<TransferProposal> {
-  const tronWeb = createTronWeb();
-  const from = getConfiguredAddress(tronWeb);
+  const from = await getAgentWalletAddress();
 
-  if (!from) {
-    throw new Error("TRON_PRIVATE_KEY is required to prepare a transfer from the demo wallet.");
-  }
+  return buildTrxTransfer(to, amountTrx, from);
+}
+
+export async function broadcastTrxTransfer(to: string, amountTrx: string): Promise<BroadcastResult> {
+  const wallet = await resolveTronWallet();
+  const from = await wallet.getAddress();
+  const proposal = await buildTrxTransfer(to, amountTrx, from);
+  const tronWeb = createTronWeb();
+  const signedTransactionJson = await wallet.signTransaction(
+    proposal.unsignedTransaction as Record<string, unknown>
+  );
+  const signedTransaction = JSON.parse(signedTransactionJson) as Record<string, unknown>;
+  const broadcastResult = await tronWeb.trx.sendRawTransaction(signedTransaction as never);
+  const txId = extractTransactionId(signedTransaction, broadcastResult);
+
+  return {
+    ...proposal,
+    type: "trx_transfer_broadcast",
+    txId,
+    broadcastResult
+  };
+}
+
+async function buildTrxTransfer(
+  to: string,
+  amountTrx: string,
+  from: string
+): Promise<TransferProposal> {
+  const tronWeb = createTronWeb();
 
   if (!tronWeb.isAddress(to)) {
     throw new Error(`Invalid recipient TRON address: ${to}`);
@@ -54,25 +80,6 @@ export async function prepareTrxTransfer(to: string, amountTrx: string): Promise
     amountTrx: formatSunToTrx(amountSun),
     amountSun: amountSun.toString(),
     unsignedTransaction: transaction
-  };
-}
-
-export async function broadcastTrxTransfer(to: string, amountTrx: string): Promise<BroadcastResult> {
-  if (!config.tronPrivateKey) {
-    throw new Error("TRON_PRIVATE_KEY is required to broadcast a transfer.");
-  }
-
-  const proposal = await prepareTrxTransfer(to, amountTrx);
-  const tronWeb = createTronWeb();
-  const signedTransaction = await tronWeb.trx.sign(proposal.unsignedTransaction as never);
-  const broadcastResult = await tronWeb.trx.sendRawTransaction(signedTransaction as never);
-  const txId = extractTransactionId(signedTransaction, broadcastResult);
-
-  return {
-    ...proposal,
-    type: "trx_transfer_broadcast",
-    txId,
-    broadcastResult
   };
 }
 
